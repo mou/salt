@@ -246,11 +246,6 @@ class Auth(object):
         payload['load'] = {}
         payload['load']['cmd'] = '_auth'
         payload['load']['id'] = self.opts['id']
-        if 'x509' in self.opts:
-            log.info('Sending client''s x509 certificate.')
-            with salt.utils.fopen(self.opts['x509']['client_cert'], 'r') as fp_:
-                payload['load']['x509'] = {}
-                payload['load']['x509']['client_cert'] = fp_.read()
         try:
             pub = RSA.load_pub_key(
                 os.path.join(self.opts['pki_dir'], self.mpub)
@@ -258,6 +253,11 @@ class Auth(object):
             payload['load']['token'] = pub.public_encrypt(self.token, 4)
         except Exception:
             pass
+        if 'x509' in self.opts:
+            log.info('Sending client\'s x509 certificate.')
+            with open(self.opts['x509']['client_cert'], 'r') as fp_:
+                payload['load']['x509'] = {}
+                payload['load']['x509']['client_cert'] = fp_.read()
         with salt.utils.fopen(tmp_pub, 'r') as fp_:
             payload['load']['pub'] = fp_.read()
         os.remove(tmp_pub)
