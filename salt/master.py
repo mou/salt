@@ -53,6 +53,8 @@ import salt.utils.gzip_util
 from salt.utils.debug import enable_sigusr1_handler
 from salt.exceptions import SaltMasterError, MasterExit
 
+import salt.tls_handshake
+
 log = logging.getLogger(__name__)
 
 
@@ -581,7 +583,8 @@ class MWorker(multiprocessing.Process):
             return ''
         return {'aes': self._handle_aes,
                 'pub': self._handle_pub,
-                'clear': self._handle_clear}[key](load)
+                'clear': self._handle_clear,
+                'tls' :  self._handle_tls}[key](load)
 
     def _handle_clear(self, load):
         '''
@@ -636,6 +639,10 @@ class MWorker(multiprocessing.Process):
             self.aes_funcs.opts['aes'] = aes
             self.k_mtime = stats.st_mtime
 
+    def _handle_tls(self, load):
+        log.debug('TLS')
+        return self.tls_funcs._handshake(load)
+
     def run(self):
         '''
         Start a Master Worker
@@ -646,6 +653,7 @@ class MWorker(multiprocessing.Process):
                 self.mkey,
                 self.crypticle)
         self.aes_funcs = AESFuncs(self.opts, self.crypticle)
+        self.tls_funcs = salt.tls_handshake.TLSFuncs(self.opts)
         self.__bind()
 
 
@@ -1435,8 +1443,8 @@ class ClearFuncs(object):
 
         return False
 
-    def _verify_x509_cert(self, text_cert):
-        return self.x509.verify_client_cert(text_cert)
+    def _verify_x509_cert(self, text_cert, enc_token=None):
+        return self.x509.verify_client_cert(text_cert, enc_token)
 
     def _auth(self, load):
         '''
@@ -1504,7 +1512,8 @@ class ClearFuncs(object):
         elif 'x509' in load and 'x509' in self.opts:
             # Check if cert is valid
             cert = load['x509']['client_cert']
-            if not self._verify_x509_cert(cert):
+            token = load['x509'].get('token', None)
+            if not self._verify_x509_cert(cert, token):
                 log.error(
                     'X509 Authentication attempt from %(id)s failed, the '
                     'certificate was not valid. This may be an attempt to '
