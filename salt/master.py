@@ -653,7 +653,8 @@ class MWorker(multiprocessing.Process):
                 self.mkey,
                 self.crypticle)
         self.aes_funcs = AESFuncs(self.opts, self.crypticle)
-        self.tls_funcs = salt.tls_handshake.TLSFuncs(self.opts)
+        if "x509" in self.opts:
+            self.tls_funcs = salt.tls_handshake.TLSFuncs(self.opts)
         self.__bind()
 
 

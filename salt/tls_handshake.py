@@ -12,6 +12,7 @@ import os
 import re
 
 #Import Cryptography libs
+from subprocess import Popen, PIPE
 from M2Crypto import RSA, X509
 
 #Import salt utils
@@ -68,9 +69,9 @@ class Handshake(object):
 class ClientHandshake(Handshake):
     def __init__(self, opts, sreq):
         super(ClientHandshake, self).__init__()
-        self.client_certificate = X509.load_cert(opts['tls']['minion_cert'])
+        self.client_certificate = X509.load_cert(opts['x509']['cert'])
         self.client_public_key = self.client_certificate.get_pubkey().as_der()
-        self.client_private_key = RSA.load_key(opts['tls']['minion_cert_key'])
+        self.client_private_key = RSA.load_key(opts['x509']['key'])
         self.client_random = self.random()
         self.sreq = sreq
         self.minion_id = opts['id']
@@ -446,9 +447,9 @@ class TLSFuncs(object):
         self.opts = opts
         self.certificate_validator = X509CertificateValidator(opts)
 
-        self.server_cert = X509.load_cert(opts['tls']['master_cert'])
-        self.server_private_key = RSA.load_key(opts['tls']['master_private_key'])
-        self.ca_cert = X509.load_cert(opts['tls']['ca_cert'])
+        self.server_cert = X509.load_cert(opts['x509']['cert'])
+        self.server_private_key = RSA.load_key(opts['x509']['key'])
+        self.ca_cert = X509.load_cert(opts['x509']['ca_cert'])
 
     def _handshake(self, load):
         log.debug('TLS handshake from client {session_id}'.format(**load))
@@ -472,7 +473,7 @@ class TLSFuncs(object):
             if response['result'] == True:
                 pubfn = os.path.join(self.opts['pki_dir'],
                     'minions',
-                    load['minion_id'])
+                        load['minion_id'])
                 with open(pubfn, 'w+') as fp_:
                     fp_.write(load['pub'])
         return response
@@ -539,25 +540,7 @@ class X509CertificateValidator(object):
         self.opts = opts
         if 'x509' in opts:
             # Create the Store for our Root CA Certificate
-            self.ca_cert_store = X509.X509_Store()
-            self.ca_cert_store.load_info(self.opts['x509']['ca_cert'])
-
-            if not hasattr(X509.X509_Store_Context, 'verify_cert'):
-                log.error(
-                    'x509 support requires a patched version of M2Crypto '
-                    'with certificate verification support.'
-                )
-                raise NotImplementedError()
-
-            # Create a CRL_Stack for any CRLs we are supporting
-            self.ca_crl_stack = X509.CRL_Stack()
-            if 'ca_crls' in opts['x509']:
-                for crl_file in opts['x509']['ca_crls']:
-                    crl = X509.load_crl(crl_file)
-                    self.ca_crl_stack.push(crl)
-            if len(self.ca_crl_stack) > 0:
-                self.ca_cert_store.set_flags(X509.m2.X509_V_FLAG_CRL_CHECK |
-                                             X509.m2.X509_V_FLAG_CRL_CHECK_ALL)
+            self.ca_cert = self.opts['x509']['ca_cert']
 
             self.issuer_dn_match = None
             if 'issuer_dn_match' in opts['x509']:
@@ -582,14 +565,8 @@ class X509CertificateValidator(object):
 
         log.debug('Loading client certificate...')
         client_cert = X509.load_cert_string(client_cert_text)
-        store_ctx = X509.X509_Store_Context()
-        store_ctx.init(self.ca_cert_store, client_cert)
-        if len(self.ca_crl_stack) > 0:
-            log.debug('adding CRLs to x509 Store Context')
-            store_ctx.add_crls(self.ca_crl_stack)
 
-        log.debug('Verifying client certificate')
-        if not store_ctx.verify_cert():
+        if self.verify_via_openssl(client_cert_text):
             log.error('Client certificate was not valid')
             return False
             # Cert is valid, is it appropriate?
@@ -612,3 +589,10 @@ class X509CertificateValidator(object):
 
         log.debug('Client certificate verified')
         return True
+
+    def verify_via_openssl(self, certificate):
+        p1 = Popen(["openssl", "verify", "-CApath", self.ca_cert, "-crl_check_all"],
+           stdin = PIPE, stdout = PIPE, stderr = PIPE)
+
+        message, error = p1.communicate(certificate)
+        return ("OK" in message and not "error" in message)
