@@ -55,7 +55,7 @@ class RemotePillar(object):
         if self.ext:
             load['ext'] = self.ext
         ret = self.sreq.send('aes', self.auth.crypticle.dumps(load), 3, 7200)
-        key = self.auth.get_keys()
+        key = self.auth.get_private_key()
         aes = key.private_decrypt(ret['key'], 4)
         pcrypt = salt.crypt.Crypticle(self.opts, aes)
         return pcrypt.loads(ret['pillar'])

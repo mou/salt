@@ -205,13 +205,17 @@ class Auth(object):
         else:
             self.mpub = 'minion_master.pub'
 
+    def get_private_key(self):
+        key = RSA.load_key(self.opts['x509']['key'])
+        return key
+
     def get_keys(self):
         '''
         Returns a key objects for the minion
         '''
 
-        if 'tls' in self.opts:
-            key = X509.load_cert(self.opts['tls']['minion_cert']).get_pubkey().get_rsa()
+        if 'x509' in self.opts:
+            key = X509.load_cert(self.opts['x509']['cert']).get_pubkey().get_rsa()
             return key
 
         # Make sure all key parent directories are accessible
@@ -276,7 +280,7 @@ class Auth(object):
         Returns the decrypted aes seed key, a string
         '''
         log.debug('Decrypting the current master AES key')
-        key = self.get_keys()
+        key = self.get_private_key()
         key_str = key.private_decrypt(payload['aes'], 4)
         if 'sig' in payload:
             m_path = os.path.join(self.opts['pki_dir'], self.mpub)

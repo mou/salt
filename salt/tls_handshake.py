@@ -52,8 +52,10 @@ class HandshakeHash(object):
         log.debug(self.messages)
         return self._hmac.hexdigest()
 
+
+
 class Handshake(object):
-    def __init__(self, id=None):
+    def __init__(self, opts, id=None):
         self.hash = HandshakeHash()
         self.protocol = '1'
         self.cipher = 'rsa/null/sha-256'
@@ -61,17 +63,75 @@ class Handshake(object):
             self.id = self.random()
         else:
             self.id = id
+        self.certificate = X509.load_cert(opts['x509']['cert'])
+        self.public_key = self.certificate.get_pubkey().get_rsa().as_pem()
+        self.private_key = RSA.load_key(opts['x509']['key'])
+        self.ca_cert_path = opts['x509']['ca_cert']
+        self.ca_cert = X509.load_cert(self.ca_cert_path)
+        self.issuer_dn_match = None
+        if 'issuer_dn_match' in opts['x509']:
+            self.issuer_dn_match = re.compile(
+                opts['x509']['issuer_dn_match']
+            )
+
+        self.subject_dn_match = None
+        if 'subject_dn_match' in opts['x509']:
+            self.subject_dn_match = re.compile(
+                opts['x509']['subject_dn_match']
+            )
+        self.opts = opts
+
 
     def random(self):
         return datetime.datetime.utcnow().isoformat() + os.urandom(28)
 
 
+    def verify_client_cert(self, client_cert, client_encrypted_token=None):
+        '''
+        Returns True if the client certificate is valid and passes any issuer
+        or subject constraints.
+        '''
+        if not 'x509' in self.opts:
+            return False
+
+        log.debug('Loading client certificate...')
+
+        if not self.verify_via_openssl(client_cert):
+            log.error('Client certificate was not valid')
+            return False
+            # Cert is valid, is it appropriate?
+        if self.issuer_dn_match and\
+           not self.issuer_dn_match.match(
+               client_cert.get_issuer().as_text()):
+            log.error('Client certificate\'s Issuer did not match')
+            return False
+        if self.subject_dn_match and\
+           not self.subject_dn_match.match(
+               client_cert.get_subject().as_text()):
+            log.error('Client certificate\'s Subject did not match')
+            return False
+        if client_encrypted_token:
+            log.debug('Checking minion x509 token...')
+            clear_token = client_cert.get_pubkey().get_rsa().public_decrypt(client_encrypted_token, 5)
+            if clear_token != 'salty cert':
+                log.error('Minion token did not match')
+                return False
+
+        log.debug('Client certificate verified')
+        return True
+
+    def verify_via_openssl(self, certificate):
+        p1 = Popen(["openssl", "verify", "-CAfile", self.ca_cert_path],
+           stdin = PIPE, stdout = PIPE, stderr = PIPE)
+
+        message, error = p1.communicate(certificate.as_pem())
+        return ("OK" in message and not "error" in message)
+
+
+
 class ClientHandshake(Handshake):
     def __init__(self, opts, sreq):
-        super(ClientHandshake, self).__init__()
-        self.client_certificate = X509.load_cert(opts['x509']['cert'])
-        self.client_public_key = self.client_certificate.get_pubkey().as_der()
-        self.client_private_key = RSA.load_key(opts['x509']['key'])
+        super(ClientHandshake, self).__init__(opts)
         self.client_random = self.random()
         self.sreq = sreq
         self.minion_id = opts['id']
@@ -129,6 +189,7 @@ class ClientHandshake(Handshake):
             return self.error('Unexpected message: {message}'.format(certificate))
         try:
             self.server_certificate = X509.load_cert_string(certificate['certificate'])
+            self.verify_client_cert(self.server_certificate)
         except:
             return self.error('Server certificate invalid')
 
@@ -137,7 +198,7 @@ class ClientHandshake(Handshake):
             return self.error('Unexpected message: {message}'.format(cert_request))
         if cert_request['certificate_type'] != 'rsa-sign':
             return self.error('Unexpected certificate type: {certificate_type}'.format(**cert_request))
-        if cert_request['ca'] != self.client_certificate.get_issuer().as_text():
+        if cert_request['ca'] != self.certificate.get_issuer().as_text():
             return self.error('Client certificate not from acceptable CA')
 
         #server hello done
@@ -153,7 +214,7 @@ class ClientHandshake(Handshake):
             {
                 'type' : 'handshake',
                 'message' : 'Certificate',
-                'certificate' : self.client_certificate.as_pem()
+                'certificate' : self.certificate.as_pem()
             },
             {
                 'type' : 'handshake',
@@ -166,7 +227,7 @@ class ClientHandshake(Handshake):
             'type' : 'handshake',
             'message' : 'CertificateVerify',
             'digest' : self.hash.digest(),
-            'digest_signature' : self.client_private_key.sign(self.hash.digest())
+            'digest_signature' : self.private_key.sign(self.hash.digest())
         }
         data.append(cert_verify_msg)
         self.hash.update([cert_verify_msg])
@@ -221,14 +282,14 @@ class ClientHandshake(Handshake):
         if server_finished['message'] != 'Finished':
             return self.error('Unexpected message: {message}'.format(**server_finished))
 
-        server_digest = self.client_private_key.private_decrypt(server_finished['encrypted'], 4)
+        server_digest = self.private_key.private_decrypt(server_finished['encrypted'], 4)
         if server_digest != pre_finished_digest:
             return self.error('Client and Server do not agree on handshake digest')
 
         if app_msg['type'] != 'app':
             return self.error('Expected application message with master info')
 
-        app_payload = self.client_private_key.private_decrypt(app_msg['encrypted'], 4)
+        app_payload = decrypt_with_private_key(self.private_key, app_msg['encrypted'])
         auth = msgpack.loads(app_payload)
         return {
             'aes' : auth['aes'],
@@ -244,7 +305,7 @@ class ClientHandshake(Handshake):
             'sequence' : sequence,
             'session_id' : self.id,
             'minion_id' : self.minion_id,
-            'pub' : self.client_public_key,
+            'pub' : self.public_key,
             'data' : data
         }
         if result is not None:
@@ -268,18 +329,9 @@ class ClientHandshake(Handshake):
 class ServerHandshake(Handshake):
     def __init__(self,
                  client_id,
-                 server_cert,
-                 server_private_key,
-                 ca_cert,
-                 certificate_validator,
                  opts
     ):
-        super(ServerHandshake, self).__init__(client_id)
-        self.server_cert = server_cert
-        self.server_private_key = server_private_key
-        self.ca_cert = ca_cert
-        self.certificate_validator = certificate_validator
-        self.opts = opts
+        super(ServerHandshake, self).__init__(opts, client_id)
 
 
     def process(self, load):
@@ -346,7 +398,7 @@ class ServerHandshake(Handshake):
             {
                 'type' : 'handshake',
                 'message' : 'Certificate',
-                'certificate' : self.server_cert.as_pem()
+                'certificate' : self.certificate.as_pem()
             },
             {
                 'type' : 'handshake',
@@ -371,7 +423,9 @@ class ServerHandshake(Handshake):
         self.hash.update([cert_verify])
 
         self.client_certificate = X509.load_cert_string(certificate['certificate'])
-        client_premaster_secret = self.server_private_key.private_decrypt(key_exchange['encrypted'], 4)
+        if not self.verify_client_cert(self.client_certificate):
+            return self.error("Client certificate fails validation against CA")
+        client_premaster_secret = self.private_key.private_decrypt(key_exchange['encrypted'], 4)
 
         client_digest = cert_verify['digest']
         client_signature = cert_verify['digest_signature']
@@ -406,7 +460,7 @@ class ServerHandshake(Handshake):
         if client_finished['message'] != 'Finished':
             return self.error('Client did not send expected Finished message')
 
-        client_digest = self.server_private_key.private_decrypt(client_finished['encrypted'], 4)
+        client_digest = self.private_key.private_decrypt(client_finished['encrypted'], 4)
         if client_digest != before_finished_digest:
             return self.error('Client and Server do not agree on handshake digest')
 
@@ -423,19 +477,20 @@ class ServerHandshake(Handshake):
                 },
                 {
                     'type' : 'app',
-                    'encrypted' : self.client_certificate.get_pubkey().get_rsa().public_encrypt(
+                    'encrypted' : encrypt_with_public_key(self.client_certificate.get_pubkey().get_rsa(),
                         msgpack.dumps(
                             {
                                 'aes' : self.opts['aes'],
                                 'publish_port' : self.opts['publish_port']
 
                             }
-                        ), 4
+                        )
                     )
                 }
             ],
             result=True
         )
+
 
 
 class TLSFuncs(object):
@@ -445,11 +500,6 @@ class TLSFuncs(object):
     def __init__(self, opts):
         self.in_progress_handshakes = {}
         self.opts = opts
-        self.certificate_validator = X509CertificateValidator(opts)
-
-        self.server_cert = X509.load_cert(opts['x509']['cert'])
-        self.server_private_key = RSA.load_key(opts['x509']['key'])
-        self.ca_cert = X509.load_cert(opts['x509']['ca_cert'])
 
     def _handshake(self, load):
         log.debug('TLS handshake from client {session_id}'.format(**load))
@@ -459,10 +509,6 @@ class TLSFuncs(object):
             log.debug(self.in_progress_handshakes)
             self.in_progress_handshakes[client_id] = ServerHandshake(
                 client_id,
-                self.server_cert,
-                self.server_private_key,
-                self.ca_cert,
-                self.certificate_validator,
                 self.opts
             )
 
@@ -494,38 +540,6 @@ class TLSFuncs(object):
             }
         }
 
-    def _client_hello(self, load):
-        client_id = load['_id']
-        if client_id in self.in_progress_handshakes:
-            return self.send_error('Client Handshake already in progress')
-
-        handshake = ServerHandshake(client_id, self.opts, self.certificate_auth)
-        self.in_progress_handshakes[client_id] = handshake
-        return self.send_response(
-            client_id,
-            handshake.hello(load['data'])
-        )
-
-    def _client_key_exchange(self, load):
-        client_id = load['_id']
-        handshake = self.in_progress_handshakes.get(client_id, None)
-        if not handshake:
-            self.send_error('No handshake in progress')
-        return self.send_response(
-            client_id,
-            handshake.key_exchange(load['data'])
-        )
-
-    def _client_finished(self, load):
-        client_id = load['_id']
-        handshake = self.in_progress_handshakes.get(client_id, None)
-        if not handshake:
-            self.send_error('No handshake in progress')
-        return self.send_response(
-            client_id,
-            handshake.finish(load['data'])
-        )
-
 class X509CertificateValidator(object):
     '''
     Container for the x509 Certificate Authority.  This requires a patched
@@ -555,44 +569,22 @@ class X509CertificateValidator(object):
                 )
 
 
-    def verify_client_cert(self, client_cert_text, client_encrypted_token=None):
-        '''
-        Returns True if the client certificate is valid and passes any issuer
-        or subject constraints.
-        '''
-        if not 'x509' in self.opts:
-            return False
+def encrypt_with_public_key(rsa, message):
+    block_length = len(rsa) / 8 - 42
+    def encrypt(message, rsa):
+        if message:
+            head, tail = (message[:block_length], message[block_length:])
+            return rsa.public_encrypt(head, RSA.pkcs1_oaep_padding) + encrypt(tail, rsa)
+        else:
+            return b""
+    return encrypt(message, rsa)
 
-        log.debug('Loading client certificate...')
-        client_cert = X509.load_cert_string(client_cert_text)
-
-        if self.verify_via_openssl(client_cert_text):
-            log.error('Client certificate was not valid')
-            return False
-            # Cert is valid, is it appropriate?
-        if self.issuer_dn_match and\
-           not self.issuer_dn_match.match(
-               client_cert.get_issuer().as_text()):
-            log.error('Client certificate\'s Issuer did not match')
-            return False
-        if self.subject_dn_match and\
-           not self.subject_dn_match.match(
-               client_cert.get_subject().as_text()):
-            log.error('Client certificate\'s Subject did not match')
-            return False
-        if client_encrypted_token:
-            log.debug('Checking minion x509 token...')
-            clear_token = client_cert.get_pubkey().get_rsa().public_decrypt(client_encrypted_token, 5)
-            if clear_token != 'salty cert':
-                log.error('Minion token did not match')
-                return False
-
-        log.debug('Client certificate verified')
-        return True
-
-    def verify_via_openssl(self, certificate):
-        p1 = Popen(["openssl", "verify", "-CApath", self.ca_cert, "-crl_check_all"],
-           stdin = PIPE, stdout = PIPE, stderr = PIPE)
-
-        message, error = p1.communicate(certificate)
-        return ("OK" in message and not "error" in message)
+def decrypt_with_private_key(rsa, message):
+    block_length = len(rsa) / 8
+    def decrypt(message, rsa):
+        if message:
+            head, tail = (message[:block_length], message[block_length:])
+            return rsa.private_decrypt(head, RSA.pkcs1_oaep_padding) + decrypt(tail, rsa)
+        else:
+            return b""
+    return decrypt(message, rsa)

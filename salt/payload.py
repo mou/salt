@@ -150,7 +150,7 @@ class SREQ(object):
         self.poller.register(self.socket, zmq.POLLIN)
         tried = 0
         while True:
-            polled = self.poller.poll(timeout * 1000)
+            polled = self.poller.poll(timeout * 100000)
             tried += 1
             if polled:
                 break
