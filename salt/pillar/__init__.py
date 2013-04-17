@@ -10,6 +10,7 @@ import logging
 # Import salt libs
 import salt.loader
 import salt.fileclient
+import salt.transport
 import salt.minion
 import salt.crypt
 from salt._compat import string_types
@@ -39,9 +40,7 @@ class RemotePillar(object):
         self.ext = ext
         self.grains = grains
         self.id_ = id_
-        self.serial = salt.payload.Serial(self.opts)
-        self.sreq = salt.payload.SREQ(self.opts['master_uri'])
-        self.auth = salt.crypt.SAuth(opts)
+        self.transport = salt.transport.Transport(self.opts)
 
     def compile_pillar(self):
         '''
@@ -54,8 +53,9 @@ class RemotePillar(object):
                 'cmd': '_pillar'}
         if self.ext:
             load['ext'] = self.ext
-        ret = self.sreq.send('aes', self.auth.crypticle.dumps(load), 3, 7200)
-        key = self.auth.get_private_key()
+        self.transport.sign_in_once_if_caller()
+        ret = self.transport.send_encrypted(load, 3, 7200)
+        key = self.transport.get_auth().get_keys()
         aes = key.private_decrypt(ret['key'], 4)
         pcrypt = salt.crypt.Crypticle(self.opts, aes)
         return pcrypt.loads(ret['pillar'])

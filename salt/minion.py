@@ -35,6 +35,8 @@ from salt.exceptions import (
     SaltInvocationError, SaltReqTimeoutError, SaltClientError
 )
 import salt.client
+import salt.tls_auth
+import salt.transport
 import salt.crypt
 import salt.loader
 import salt.utils
@@ -419,8 +421,9 @@ class Minion(object):
         # module
         opts['grains'] = salt.loader.grains(opts)
         opts.update(resolve_dns(opts))
+        self.transport = salt.transport.Transport(opts)
         self.opts = opts
-        self.authenticate(timeout, safe)
+        self.transport.sign_in(timeout, safe)
         self.opts['pillar'] = salt.pillar.get_pillar(
             opts,
             opts['grains'],
@@ -471,9 +474,8 @@ class Minion(object):
             load['tag'] = tag
         else:
             return
-        sreq = salt.payload.SREQ(self.opts['master_uri'])
         try:
-            sreq.send('aes', self.crypticle.dumps(load))
+            self.transport.send_encrypted(load)
         except Exception:
             pass
 
@@ -482,9 +484,7 @@ class Minion(object):
         Takes a payload from the master publisher and does whatever the
         master wants done.
         '''
-        {'aes': self._handle_aes,
-         'pub': self._handle_pub,
-         'clear': self._handle_clear}[payload['enc']](payload['load'])
+        {'encrypted': self._handle_aes}[payload['enc']](payload['load'])
 
     def _handle_aes(self, load):
         '''
@@ -492,10 +492,10 @@ class Minion(object):
         instructions
         '''
         try:
-            data = self.crypticle.loads(load)
+            data = self.transport.get_crypticle().loads(load)
         except AuthenticationError:
-            self.authenticate()
-            data = self.crypticle.loads(load)
+            self.transport.sign_in()
+            data = self.transport.get_crypticle().loads(load)
         # Verify that the publication is valid
         if 'tgt' not in data or 'jid' not in data or 'fun' not in data \
            or 'arg' not in data:
@@ -524,18 +524,6 @@ class Minion(object):
             )
         log.debug('Command details {0}'.format(data))
         self._handle_decoded_payload(data)
-
-    def _handle_pub(self, load):
-        '''
-        Handle public key payloads
-        '''
-        pass
-
-    def _handle_clear(self, load):
-        '''
-        Handle un-encrypted transmissions
-        '''
-        pass
 
     def _handle_decoded_payload(self, data):
         '''
@@ -742,7 +730,6 @@ class Minion(object):
                     # The file is gone already
                     pass
         log.info('Returning information for job: {0}'.format(jid))
-        sreq = salt.payload.SREQ(self.opts['master_uri'])
         if ret_cmd == '_syndic_return':
             load = {'cmd': ret_cmd,
                     'id': self.opts['id'],
@@ -767,13 +754,13 @@ class Minion(object):
         except KeyError:
             pass
         try:
-            ret_val = sreq.send('aes', self.crypticle.dumps(load))
+            ret_val = self.transport.send_encrypted(load)
         except SaltReqTimeoutError:
             ret_val = ''
         if isinstance(ret_val, string_types) and not ret_val:
             # The master AES key has changed, reauth
             self.authenticate()
-            ret_val = sreq.send('aes', self.crypticle.dumps(load))
+            ret_val = self.transport.send_encrypted(load)
         if self.opts['cache_jobs']:
             # Local job cache has been enabled
             fn_ = os.path.join(
@@ -810,31 +797,7 @@ class Minion(object):
         Return the master publish port
         '''
         return 'tcp://{ip}:{port}'.format(ip=self.opts['master_ip'],
-                                          port=self.publish_port)
-
-    def authenticate(self, timeout=60, safe=True):
-        '''
-        Authenticate with the master, this method breaks the functional
-        paradigm, it will update the master information from a fresh sign
-        in, signing in can occur as often as needed to keep up with the
-        revolving master AES key.
-        '''
-        log.debug(
-            'Attempting to authenticate with the Salt Master at {0}'.format(
-                self.opts['master_ip']
-            )
-        )
-        auth = salt.crypt.Auth(self.opts)
-        while True:
-            creds = auth.sign_in(timeout, safe)
-            if creds != 'retry':
-                log.info('Authentication with master successful!')
-                break
-            log.info('Waiting for minion key to be accepted by the master.')
-            time.sleep(self.opts['acceptance_wait_time'])
-        self.aes = creds['aes']
-        self.publish_port = creds['publish_port']
-        self.crypticle = salt.crypt.Crypticle(self.opts, self.aes)
+                                          port=self.transport.session['publish_port'])
 
     def module_refresh(self):
         '''

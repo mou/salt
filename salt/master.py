@@ -33,6 +33,8 @@ from M2Crypto import RSA
 
 # Import salt libs
 import salt.crypt
+import salt.tls_auth
+import salt.transport
 import salt.utils
 import salt.client
 import salt.payload
@@ -96,13 +98,10 @@ class SMaster(object):
         self.opts = opts
         self.master_key = salt.crypt.MasterKeys(self.opts)
         self.key = self.__prep_key()
-        self.crypticle = self.__prep_crypticle()
+        self.transport = self.__prep_transport()
 
-    def __prep_crypticle(self):
-        '''
-        Return the crypticle used for AES
-        '''
-        return salt.crypt.Crypticle(self.opts, self.opts['aes'])
+    def __prep_transport(self):
+        return salt.transport.Transport(self.opts)
 
     def __prep_key(self):
         '''
@@ -315,7 +314,7 @@ class Master(SMaster):
         clear_old_jobs_proc.start()
         reqserv = ReqServer(
                 self.opts,
-                self.crypticle,
+                self.transport,
                 self.key,
                 self.master_key)
         reqserv.start_publisher()
@@ -423,7 +422,7 @@ class ReqServer(object):
     Starts up the master request server, minions send results to this
     interface.
     '''
-    def __init__(self, opts, crypticle, key, mkey):
+    def __init__(self, opts, transport, key, mkey):
         self.opts = opts
         self.master_key = mkey
         self.context = zmq.Context(self.opts['worker_threads'])
@@ -439,7 +438,7 @@ class ReqServer(object):
         )
         # Prepare the AES key
         self.key = key
-        self.crypticle = crypticle
+        self.transport = transport
 
     def __bind(self):
         '''
@@ -459,7 +458,7 @@ class ReqServer(object):
             self.work_procs.append(MWorker(self.opts,
                     self.master_key,
                     self.key,
-                    self.crypticle))
+                    self.transport))
 
         for ind, proc in enumerate(self.work_procs):
             log.info('Starting Salt worker process {0}'.format(ind))
@@ -532,11 +531,11 @@ class MWorker(multiprocessing.Process):
             opts,
             mkey,
             key,
-            crypticle):
+            transport):
         multiprocessing.Process.__init__(self)
         self.opts = opts
         self.serial = salt.payload.Serial(opts)
-        self.crypticle = crypticle
+        self.transport = transport
         self.mkey = mkey
         self.key = key
         self.k_mtime = 0
@@ -581,10 +580,8 @@ class MWorker(multiprocessing.Process):
             load = payload['load']
         except KeyError:
             return ''
-        return {'aes': self._handle_aes,
-                'pub': self._handle_pub,
-                'clear': self._handle_clear,
-                'tls' :  self._handle_tls}[key](load)
+        return {'encrypted': self._handle_aes,
+                'clear': self._handle_clear}[key](load)
 
     def _handle_clear(self, load):
         '''
@@ -604,7 +601,7 @@ class MWorker(multiprocessing.Process):
         Handle a command sent via an AES key
         '''
         try:
-            data = self.crypticle.loads(load)
+            data = self.transport.get_crypticle().loads(load)
         except Exception:
             return ''
         if 'cmd' not in data:
@@ -639,10 +636,6 @@ class MWorker(multiprocessing.Process):
             self.aes_funcs.opts['aes'] = aes
             self.k_mtime = stats.st_mtime
 
-    def _handle_tls(self, load):
-        log.debug('TLS')
-        return self.tls_funcs._handshake(load)
-
     def run(self):
         '''
         Start a Master Worker
@@ -651,10 +644,8 @@ class MWorker(multiprocessing.Process):
                 self.opts,
                 self.key,
                 self.mkey,
-                self.crypticle)
-        self.aes_funcs = AESFuncs(self.opts, self.crypticle)
-        if "x509" in self.opts:
-            self.tls_funcs = salt.tls_handshake.TLSFuncs(self.opts)
+                self.transport)
+        self.aes_funcs = AESFuncs(self.opts, self.transport)
         self.__bind()
 
 
@@ -664,11 +655,11 @@ class AESFuncs(object):
     '''
     # The AES Functions:
     #
-    def __init__(self, opts, crypticle):
+    def __init__(self, opts, transport):
         self.opts = opts
         self.event = salt.utils.event.MasterEvent(self.opts['sock_dir'])
         self.serial = salt.payload.Serial(opts)
-        self.crypticle = crypticle
+        self.transport = transport
         self.ckminions = salt.utils.minions.CkMinions(opts)
         # Create the tops dict for loading external top data
         self.tops = salt.loader.tops(self.opts)
@@ -1234,7 +1225,7 @@ class AESFuncs(object):
         '''
         # Don't honor private functions
         if func.startswith('__'):
-            return self.crypticle.dumps({})
+            return self.transport.get_crypticle().dumps({})
         # Run the func
         if hasattr(self, func):
             try:
@@ -1252,7 +1243,7 @@ class AESFuncs(object):
                     func
                 )
             )
-            return self.crypticle.dumps(False)
+            return self.transport.get_crypticle().dumps(False)
         # Don't encrypt the return value for the _return func
         # (we don't care about the return value, so why encrypt it?)
         if func == '_return':
@@ -1260,7 +1251,7 @@ class AESFuncs(object):
         if func == '_pillar' and 'id' in load:
             if load.get('ver') != '2' and self.opts['pillar_version'] == 1:
                 # Authorized to return old pillar proto
-                return self.crypticle.dumps(ret)
+                return self.transport.get_crypticle().dumps(ret)
             # encrypt with a specific AES key
             pubfn = os.path.join(self.opts['pki_dir'],
                     'minions',
@@ -1272,14 +1263,14 @@ class AESFuncs(object):
             try:
                 pub = RSA.load_pub_key(pubfn)
             except RSA.RSAError:
-                return self.crypticle.dumps({})
+                return self.transport.get_crypticle().dumps({})
 
             pret = {}
             pret['key'] = pub.public_encrypt(key, 4)
             pret['pillar'] = pcrypt.dumps(ret)
             return pret
         # AES Encrypt the return
-        return self.crypticle.dumps(ret)
+        return self.transport.get_crypticle().dumps(ret)
 
 
 class ClearFuncs(object):
@@ -1291,12 +1282,13 @@ class ClearFuncs(object):
     # the clear:
     # publish (The publish from the LocalClient)
     # _auth
-    def __init__(self, opts, key, master_key, crypticle):
+    def __init__(self, opts, key, master_key, transport):
         self.opts = opts
         self.serial = salt.payload.Serial(opts)
         self.key = key
         self.master_key = master_key
-        self.crypticle = crypticle
+        self.transport = transport
+        self.tls_funcs = salt.tls_handshake.TLSFuncs(opts)
         # Create the event manager
         self.event = salt.utils.event.MasterEvent(self.opts['sock_dir'])
         # Make a client
@@ -1312,9 +1304,6 @@ class ClearFuncs(object):
                 rend=False)
         # Make a wheel object
         self.wheel_ = salt.wheel.Wheel(opts)
-
-        #x509 support
-        self.x509 = salt.crypt.X509CertificateAuth(self.opts)
 
     def _send_cluster(self):
         '''
@@ -1444,9 +1433,6 @@ class ClearFuncs(object):
 
         return False
 
-    def _verify_x509_cert(self, text_cert, enc_token=None):
-        return self.x509.verify_client_cert(text_cert, enc_token)
-
     def _auth(self, load):
         '''
         Authenticate the client, use the sent public key to encrypt the AES key
@@ -1472,6 +1458,9 @@ class ClearFuncs(object):
             return {'enc': 'clear',
                     'load': {'ret': False}}
         log.info('Authentication request from {id}'.format(**load))
+        return self.tls_funcs._handshake(load, self.transport)
+
+        '''
         pubfn = os.path.join(self.opts['pki_dir'],
                 'minions',
                 load['id'])
@@ -1508,24 +1497,6 @@ class ClearFuncs(object):
                 eload = {'result': False,
                          'id': load['id'],
                          'pub': load['pub']}
-                self.event.fire_event(eload, 'auth')
-                return ret
-        elif 'x509' in load and 'x509' in self.opts:
-            # Check if cert is valid
-            cert = load['x509']['client_cert']
-            token = load['x509'].get('token', None)
-            if not self._verify_x509_cert(cert, token):
-                log.error(
-                    'X509 Authentication attempt from %(id)s failed, the '
-                    'certificate was not valid. This may be an attempt to '
-                    'compromise the Salt cluster.'.format(**load)
-                )
-                ret = {'enc': 'clear',
-                       'load': {'ret': False}}
-                eload = {'result': False,
-                         'id': load['id'],
-                         'pub': load['pub'],
-                         'x509': load['x509']}
                 self.event.fire_event(eload, 'auth')
                 return ret
         elif not os.path.isfile(pubfn_pend)\
@@ -1670,6 +1641,7 @@ class ClearFuncs(object):
                  'pub': load['pub']}
         self.event.fire_event(eload, 'auth')
         return ret
+        '''
 
     def wheel(self, clear_load):
         '''
@@ -2002,7 +1974,6 @@ class ClearFuncs(object):
                     exc_info=True
                 )
         # Set up the payload
-        payload = {'enc': 'aes'}
         # Altering the contents of the publish load is serious!! Changes here
         # break compatibility with minion/master versions and even tiny
         # additions can have serious implications on the performance of the
@@ -2041,7 +2012,9 @@ class ClearFuncs(object):
             )
         log.debug('Published command details {0}'.format(load))
 
-        payload['load'] = self.crypticle.dumps(load)
+        # Set up the payload
+        payload = {'enc': 'encrypted'}
+        payload['load'] = self.transport.get_crypticle().dumps(load)
         # Send 0MQ to the publisher
         context = zmq.Context(1)
         pub_sock = context.socket(zmq.PUSH)

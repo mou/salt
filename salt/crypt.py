@@ -6,17 +6,13 @@ authenticating peers
 
 # Import python libs
 import os
-from subprocess import Popen, PIPE
 import sys
 import hmac
-import getpass
 import hashlib
 import logging
-import re
-import tempfile
 
-# Import Cryptography libs
-from M2Crypto import RSA, X509
+# Import third party libs
+from M2Crypto import RSA
 from Crypto.Cipher import AES
 
 # Import salt libs
@@ -24,7 +20,6 @@ import salt.utils
 import salt.payload
 import salt.utils.verify
 import salt.version
-import salt.tls_handshake
 from salt.exceptions import (
     AuthenticationError, SaltClientError, SaltReqTimeoutError
 )
@@ -70,77 +65,6 @@ def gen_keys(keydir, keyname, keysize, user=None):
             pass
     return priv
 
-class X509CertificateAuth(object):
-    '''
-    Container for the x509 Certificate Authority.  This requires a patched
-    version of M2Crypto to work, as current versions of M2Crypto do not
-    expose all of the required Certificate verification functionality of
-    OpenSSL.
-
-    See the Pulp project for a patch to M2Crypto-0.21.1 here:
-    https://github.com/pulp/pulp/blob/master/deps/m2crypto/m2crypto-0.21.1-x509_crl.patch
-    '''
-    def __init__(self, opts):
-        self.opts = opts
-        if 'x509' in opts:
-            # Create the Store for our Root CA Certificate
-            self.ca_cert = self.opts['x509']['ca_cert']
-
-            self.issuer_dn_match = None
-            if 'issuer_dn_match' in opts['x509']:
-                self.issuer_dn_match = re.compile(
-                    opts['x509']['issuer_dn_match']
-                )
-
-            self.subject_dn_match = None
-            if 'subject_dn_match' in opts['x509']:
-                self.subject_dn_match = re.compile(
-                    opts['x509']['subject_dn_match']
-                )
-
-
-    def verify_client_cert(self, client_cert_text, client_encrypted_token=None):
-        '''
-        Returns True if the client certificate is valid and passes any issuer
-        or subject constraints.
-        '''
-        if not 'x509' in self.opts:
-            return False
-
-        log.debug('Loading client certificate...')
-        client_cert = X509.load_cert_string(client_cert_text)
-
-        log.debug('Verifying client certificate')
-        if not self.verify_via_openssl(client_cert_text):
-            log.error('Client certificate was not valid')
-            return False
-        # Cert is valid, is it appropriate?
-        if self.issuer_dn_match and \
-           not self.issuer_dn_match.match(
-               client_cert.get_issuer().as_text()):
-            log.error('Client certificate''s Issuer did not match')
-            return False
-        if self.subject_dn_match and \
-           not self.subject_dn_match.match(
-               client_cert.get_subject().as_text()):
-            log.error('Client certificate''s Subject did not match')
-            return False
-        if client_encrypted_token:
-            log.debug('Checking minion x509 token...')
-            clear_token = client_cert.get_pubkey().get_rsa().public_decrypt(client_encrypted_token, 5)
-            if clear_token != 'salty cert':
-                log.error('Minion token did not match')
-                return False
-
-        log.debug('Client certificate verified')
-        return True
-
-    def verify_via_openssl(self, certificate):
-        p1 = Popen(["openssl", "verify", "-CApath", self.ca_cert, "-crl_check_all"],
-           stdin = PIPE, stdout = PIPE, stderr = PIPE)
-
-        message, error = p1.communicate(certificate)
-        return ("OK" in message and not "error" in message)
 
 class MasterKeys(dict):
     '''
@@ -192,8 +116,9 @@ class Auth(object):
     The Auth class provides the sequence for setting up communication with
     the master server from a minion.
     '''
-    def __init__(self, opts):
+    def __init__(self, transport, opts):
         self.opts = opts
+        self.transport = transport
         self.token = Crypticle.generate_key_string()
         self.serial = salt.payload.Serial(self.opts)
         self.pub_path = os.path.join(self.opts['pki_dir'], 'minion.pub')
@@ -205,19 +130,10 @@ class Auth(object):
         else:
             self.mpub = 'minion_master.pub'
 
-    def get_private_key(self):
-        key = RSA.load_key(self.opts['x509']['key'])
-        return key
-
     def get_keys(self):
         '''
         Returns a key objects for the minion
         '''
-
-        if 'x509' in self.opts:
-            key = X509.load_cert(self.opts['x509']['cert']).get_pubkey().get_rsa()
-            return key
-
         # Make sure all key parent directories are accessible
         user = self.opts.get('user', 'root')
         salt.utils.verify.check_path_traversal(self.opts['pki_dir'], user)
@@ -255,16 +171,6 @@ class Auth(object):
             payload['load']['token'] = pub.public_encrypt(self.token, 4)
         except Exception:
             pass
-        if 'x509' in self.opts:
-            log.info('Sending minion x509 certificate.')
-            with open(self.opts['x509']['cert'], 'r') as fp_:
-                payload['load']['x509'] = {}
-                payload['load']['x509']['cert'] = fp_.read()
-            if 'key'  in self.opts['x509']:
-                log.info('Sending client x509 token.')
-                key = RSA.load_key( self.opts['x509']['key'] )
-                encrypted_token = key.private_encrypt('salty cert', 5)
-                payload['load']['x509']['token'] = encrypted_token
         with salt.utils.fopen(tmp_pub, 'r') as fp_:
             payload['load']['pub'] = fp_.read()
         os.remove(tmp_pub)
@@ -280,7 +186,7 @@ class Auth(object):
         Returns the decrypted aes seed key, a string
         '''
         log.debug('Decrypting the current master AES key')
-        key = self.get_private_key()
+        key = self.get_keys()
         key_str = key.private_decrypt(payload['aes'], 4)
         if 'sig' in payload:
             m_path = os.path.join(self.opts['pki_dir'], self.mpub)
@@ -341,7 +247,6 @@ class Auth(object):
         returns a dict containing the master publish interface to bind to
         and the decrypted aes key for transport decryption.
         '''
-        auth = {}
         m_pub_fn = os.path.join(self.opts['pki_dir'], self.mpub)
         try:
             self.opts['master_ip'] = salt.utils.dns_check(
@@ -358,14 +263,6 @@ class Auth(object):
             self.opts['master_uri'],
             self.opts.get('id', '')
         )
-
-        if 'x509' in self.opts:
-            log.debug('Starting TLS..')
-            payload = salt.tls_handshake.do_client_handshake(sreq, self.opts)
-            auth['aes'] = payload['aes']
-            auth['publish_port'] = payload['publish_port']
-            return auth
-
         try:
             payload = sreq.send_auto(
                 self.minion_sign_in_payload(),
@@ -396,8 +293,8 @@ class Auth(object):
                         )
                     )
                     return 'retry'
-        auth['aes'] = self.verify_master(payload)
-        if not auth['aes']:
+        aes = self.verify_master(payload)
+        if not aes:
             log.critical(
                 'The Salt Master server\'s public key did not authenticate!\n'
                 'The master may need to be updated if it is a version of Salt '
@@ -422,8 +319,9 @@ class Auth(object):
                     )
                 )
                 sys.exit(42)
-        auth['publish_port'] = payload['publish_port']
-        return auth
+        self.transport.session['aes'] = aes
+        self.transport.session['publish_port'] = payload['publish_port']
+        return True
 
 
 class Crypticle(object):
@@ -535,7 +433,7 @@ class SAuth(Auth):
                     sys.exit(2)
                 continue
             break
-        return Crypticle(self.opts, creds['aes'])
+        return
 
     def gen_token(self, clear_tok):
         '''

@@ -151,7 +151,10 @@ class ClientHandshake(Handshake):
 
         response = self.send_finished()
         result = self.parse_server_finished(response)
-        return result
+        return {'publish_port': result['publish_port'],
+                'cert': self.certificate,
+                'key': self.private_key,
+                'opposite_cert': self.server_certificate_string}
 
     def send_hello(self):
         log.debug('Sending hello...')
@@ -188,6 +191,7 @@ class ClientHandshake(Handshake):
         if certificate['message'] != 'Certificate':
             return self.error('Unexpected message: {message}'.format(certificate))
         try:
+            self.server_certificate_string = certificate['certificate']
             self.server_certificate = X509.load_cert_string(certificate['certificate'])
             self.verify_client_cert(self.server_certificate)
         except:
@@ -301,16 +305,16 @@ class ClientHandshake(Handshake):
         if do_hash:
             self.hash.update(data)
         payload = {
-            'enc' : 'tls',
+            'cmd': '_auth',
             'sequence' : sequence,
             'session_id' : self.id,
-            'minion_id' : self.minion_id,
+            'id' : self.minion_id,
             'pub' : self.public_key,
             'data' : data
         }
         if result is not None:
             payload['result'] = result
-        return self.sreq.send('tls', payload)
+        return self.sreq.send('clear', payload)
 
     def error(self, error):
         log.debug(error)
@@ -327,12 +331,8 @@ class ClientHandshake(Handshake):
         return data
 
 class ServerHandshake(Handshake):
-    def __init__(self,
-                 client_id,
-                 opts
-    ):
+    def __init__(self, client_id, opts):
         super(ServerHandshake, self).__init__(opts, client_id)
-
 
     def process(self, load):
         if 'sequence' not in load:
@@ -356,7 +356,7 @@ class ServerHandshake(Handshake):
     def error(self, error):
         log.debug(error)
         return {
-            'enc' : 'tls',
+            'enc' : 'clear',
             'result' : False,
             'load' : {
                 'error' : error
@@ -366,7 +366,7 @@ class ServerHandshake(Handshake):
     def reply(self, data, result=None):
         self.hash.update(data)
         response = {
-            'enc' : 'tls',
+            'enc' : 'clear',
             'load' : {
                 'data' : data
             }
@@ -501,7 +501,7 @@ class TLSFuncs(object):
         self.in_progress_handshakes = {}
         self.opts = opts
 
-    def _handshake(self, load):
+    def _handshake(self, load, transport):
         log.debug('TLS handshake from client {session_id}'.format(**load))
         client_id = load['session_id']
         if client_id not in self.in_progress_handshakes:
@@ -512,14 +512,16 @@ class TLSFuncs(object):
                 self.opts
             )
 
-        response = self.in_progress_handshakes[client_id].process(load)
+        session_handshake = self.in_progress_handshakes[client_id]
+        response = session_handshake.process(load)
         if 'result' in response:
+            transport.session['opposite_cert'] = session_handshake.client_certificate.as_pem()
             log.debug('Removing handshake session {client_id}'.format(client_id=client_id))
             self.in_progress_handshakes.pop(client_id)
             if response['result'] == True:
                 pubfn = os.path.join(self.opts['pki_dir'],
                     'minions',
-                        load['minion_id'])
+                        load['id'])
                 with open(pubfn, 'w+') as fp_:
                     fp_.write(load['pub'])
         return response
@@ -533,7 +535,7 @@ class TLSFuncs(object):
     def send_error(self, client_id, error):
         self.in_progress_handshakes.pop(client_id)
         return {
-            'enc' : 'tls',
+            'enc' : 'clear',
             'result' : False,
             'load' : {
                 'error' : error
@@ -578,6 +580,7 @@ def encrypt_with_public_key(rsa, message):
         else:
             return b""
     return encrypt(message, rsa)
+
 
 def decrypt_with_private_key(rsa, message):
     block_length = len(rsa) / 8
