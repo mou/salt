@@ -96,7 +96,6 @@ class SMaster(object):
         Create a salt master server instance
         '''
         self.opts = opts
-        self.master_key = salt.crypt.MasterKeys(self.opts)
         self.key = self.__prep_key()
         self.transport = self.__prep_transport()
 
@@ -315,8 +314,7 @@ class Master(SMaster):
         reqserv = ReqServer(
                 self.opts,
                 self.transport,
-                self.key,
-                self.master_key)
+                self.key)
         reqserv.start_publisher()
         reqserv.start_event_publisher()
         reqserv.start_reactor()
@@ -422,9 +420,8 @@ class ReqServer(object):
     Starts up the master request server, minions send results to this
     interface.
     '''
-    def __init__(self, opts, transport, key, mkey):
+    def __init__(self, opts, transport, key):
         self.opts = opts
-        self.master_key = mkey
         self.context = zmq.Context(self.opts['worker_threads'])
         # Prepare the zeromq sockets
         self.uri = 'tcp://{interface}:{ret_port}'.format(**self.opts)
@@ -456,7 +453,6 @@ class ReqServer(object):
 
         for ind in range(int(self.opts['worker_threads'])):
             self.work_procs.append(MWorker(self.opts,
-                    self.master_key,
                     self.key,
                     self.transport))
 
@@ -529,14 +525,12 @@ class MWorker(multiprocessing.Process):
     '''
     def __init__(self,
             opts,
-            mkey,
             key,
             transport):
         multiprocessing.Process.__init__(self)
         self.opts = opts
         self.serial = salt.payload.Serial(opts)
         self.transport = transport
-        self.mkey = mkey
         self.key = key
         self.k_mtime = 0
 
@@ -643,7 +637,6 @@ class MWorker(multiprocessing.Process):
         self.clear_funcs = ClearFuncs(
                 self.opts,
                 self.key,
-                self.mkey,
                 self.transport)
         self.aes_funcs = AESFuncs(self.opts, self.transport)
         self.__bind()
@@ -1282,13 +1275,11 @@ class ClearFuncs(object):
     # the clear:
     # publish (The publish from the LocalClient)
     # _auth
-    def __init__(self, opts, key, master_key, transport):
+    def __init__(self, opts, key, transport):
         self.opts = opts
         self.serial = salt.payload.Serial(opts)
         self.key = key
-        self.master_key = master_key
         self.transport = transport
-        self.tls_funcs = salt.tls_handshake.TLSFuncs(opts)
         # Create the event manager
         self.event = salt.utils.event.MasterEvent(self.opts['sock_dir'])
         # Make a client
@@ -1434,214 +1425,7 @@ class ClearFuncs(object):
         return False
 
     def _auth(self, load):
-        '''
-        Authenticate the client, use the sent public key to encrypt the AES key
-        which was generated at start up.
-
-        This method fires an event over the master event manager. The event is
-        tagged "auth" and returns a dict with information about the auth
-        event
-        '''
-        # 0. Check for max open files
-        # 1. Verify that the key we are receiving matches the stored key
-        # 2. Store the key if it is not there
-        # 3. make an RSA key with the pub key
-        # 4. encrypt the AES key as an encrypted salt.payload
-        # 5. package the return and return it
-
-        salt.utils.verify.check_max_open_files(self.opts)
-
-        if not salt.utils.verify.valid_id(load['id']):
-            log.info(
-                'Authentication request from invalid id {id}'.format(**load)
-                )
-            return {'enc': 'clear',
-                    'load': {'ret': False}}
-        log.info('Authentication request from {id}'.format(**load))
-        return self.tls_funcs._handshake(load, self.transport)
-
-        '''
-        pubfn = os.path.join(self.opts['pki_dir'],
-                'minions',
-                load['id'])
-        pubfn_pend = os.path.join(self.opts['pki_dir'],
-                'minions_pre',
-                load['id'])
-        pubfn_rejected = os.path.join(self.opts['pki_dir'],
-                'minions_rejected',
-                load['id'])
-        if self.opts['open_mode']:
-            # open mode is turned on, nuts to checks and overwrite whatever
-            # is there
-            pass
-        elif os.path.isfile(pubfn_rejected):
-            # The key has been rejected, don't place it in pending
-            log.info('Public key rejected for {id}'.format(**load))
-            ret = {'enc': 'clear',
-                   'load': {'ret': False}}
-            eload = {'result': False,
-                     'id': load['id'],
-                     'pub': load['pub']}
-            self.event.fire_event(eload, 'auth')
-            return ret
-        elif os.path.isfile(pubfn):
-            # The key has been accepted check it
-            if salt.utils.fopen(pubfn, 'r').read() != load['pub']:
-                log.error(
-                    'Authentication attempt from {id} failed, the public '
-                    'keys did not match. This may be an attempt to compromise '
-                    'the Salt cluster.'.format(**load)
-                )
-                ret = {'enc': 'clear',
-                       'load': {'ret': False}}
-                eload = {'result': False,
-                         'id': load['id'],
-                         'pub': load['pub']}
-                self.event.fire_event(eload, 'auth')
-                return ret
-        elif not os.path.isfile(pubfn_pend)\
-                and not self._check_autosign(load['id']):
-            if os.path.isdir(pubfn_pend):
-                # The key path is a directory, error out
-                log.info(
-                    'New public key id is a directory {id}'.format(**load)
-                )
-                ret = {'enc': 'clear',
-                       'load': {'ret': False}}
-                eload = {'result': False,
-                         'id': load['id'],
-                         'pub': load['pub']}
-                self.event.fire_event(eload, 'auth')
-                return ret
-            # This is a new key, stick it in pre
-            log.info(
-                'New public key placed in pending for {id}'.format(**load)
-            )
-            with salt.utils.fopen(pubfn_pend, 'w+') as fp_:
-                fp_.write(load['pub'])
-            ret = {'enc': 'clear',
-                   'load': {'ret': True}}
-            eload = {'result': True,
-                     'act': 'pend',
-                     'id': load['id'],
-                     'pub': load['pub']}
-            self.event.fire_event(eload, 'auth')
-            return ret
-        elif os.path.isfile(pubfn_pend)\
-                and not self._check_autosign(load['id']):
-            # This key is in pending, if it is the same key ret True, else
-            # ret False
-            if salt.utils.fopen(pubfn_pend, 'r').read() != load['pub']:
-                log.error(
-                    'Authentication attempt from {id} failed, the public '
-                    'keys in pending did not match. This may be an attempt to '
-                    'compromise the Salt cluster.'.format(**load)
-                )
-                eload = {'result': False,
-                         'id': load['id'],
-                         'pub': load['pub']}
-                self.event.fire_event(eload, 'auth')
-                return {'enc': 'clear',
-                        'load': {'ret': False}}
-            else:
-                log.info(
-                    'Authentication failed from host {id}, the key is in '
-                    'pending and needs to be accepted with salt-key '
-                    '-a {id}'.format(**load)
-                )
-                eload = {'result': True,
-                         'act': 'pend',
-                         'id': load['id'],
-                         'pub': load['pub']}
-                self.event.fire_event(eload, 'auth')
-                return {'enc': 'clear',
-                        'load': {'ret': True}}
-        elif os.path.isfile(pubfn_pend)\
-                and self._check_autosign(load['id']):
-            # This key is in pending, if it is the same key auto accept it
-            if salt.utils.fopen(pubfn_pend, 'r').read() != load['pub']:
-                log.error(
-                    'Authentication attempt from {id} failed, the public '
-                    'keys in pending did not match. This may be an attempt to '
-                    'compromise the Salt cluster.'.format(**load)
-                )
-                eload = {'result': False,
-                         'id': load['id'],
-                         'pub': load['pub']}
-                self.event.fire_event(eload, 'auth')
-                return {'enc': 'clear',
-                        'load': {'ret': False}}
-            else:
-                pass
-        elif not os.path.isfile(pubfn_pend)\
-                and self._check_autosign(load['id']):
-            # This is a new key and it should be automatically be accepted
-            pass
-        else:
-            # Something happened that I have not accounted for, FAIL!
-            log.warn('Unaccounted for authentication failure')
-            eload = {'result': False,
-                     'id': load['id'],
-                     'pub': load['pub']}
-            self.event.fire_event(eload, 'auth')
-            return {'enc': 'clear',
-                    'load': {'ret': False}}
-
-        log.info('Authentication accepted from {id}'.format(**load))
-        with salt.utils.fopen(pubfn, 'w+') as fp_:
-            fp_.write(load['pub'])
-        pub = None
-
-        # The key payload may sometimes be corrupt when using auto-accept
-        # and an empty request comes in
-        try:
-            pub = RSA.load_pub_key(pubfn)
-        except RSA.RSAError as err:
-            log.error('Corrupt public key "{0}": {1}'.format(pubfn, err))
-            return {'enc': 'clear',
-                    'load': {'ret': False}}
-
-        ret = {'enc': 'pub',
-               'pub_key': self.master_key.get_pub_str(),
-               'publish_port': self.opts['publish_port'],
-              }
-        if self.opts['auth_mode'] >= 2:
-            if 'token' in load:
-                try:
-                    mtoken = self.master_key.key.private_decrypt(load['token'], 4)
-                    aes = '{0}_|-{1}'.format(self.opts['aes'], mtoken)
-                except Exception:
-                    # Token failed to decrypt, send back the salty bacon to
-                    # support older minions
-                    pass
-            else:
-                aes = self.opts['aes']
-
-            ret['aes'] = pub.public_encrypt(aes, 4)
-        else:
-            if 'token' in load:
-                try:
-                    mtoken = self.master_key.key.private_decrypt(
-                        load['token'], 4
-                    )
-                    ret['token'] = pub.public_encrypt(mtoken, 4)
-                except Exception:
-                    # Token failed to decrypt, send back the salty bacon to
-                    # support older minions
-                    pass
-
-            aes = self.opts['aes']
-            ret['aes'] = pub.public_encrypt(self.opts['aes'], 4)
-        # Be aggressive about the signature
-        digest = hashlib.sha256(aes).hexdigest()
-        ret['sig'] = self.master_key.key.private_encrypt(digest, 5)
-        eload = {'result': True,
-                 'act': 'accept',
-                 'id': load['id'],
-                 'pub': load['pub']}
-        self.event.fire_event(eload, 'auth')
-        return ret
-        '''
+        return self.transport.auth(load)
 
     def wheel(self, clear_load):
         '''

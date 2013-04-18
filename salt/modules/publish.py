@@ -10,6 +10,7 @@ import logging
 import salt.crypt
 import salt.payload
 from salt.exceptions import SaltReqTimeoutError
+import salt.transport
 from salt._compat import string_types, integer_types
 
 log = logging.getLogger(__name__)
@@ -47,9 +48,9 @@ def _publish(
     arg = _normalize_arg(arg)
 
     log.info('Publishing {0!r} to {master_uri}'.format(fun, **__opts__))
-    sreq = salt.payload.SREQ(__opts__['master_uri'])
-    auth = salt.crypt.SAuth(__opts__)
-    tok = auth.gen_token('salt')
+    transport = salt.transport.Transport(__opts__)
+    transport.sign_in_once_if_caller()
+    tok = transport.get_crypticle().get_keys().private_encrypt('salt', 5)
     load = {'cmd': 'minion_publish',
             'fun': fun,
             'arg': arg,
@@ -62,8 +63,7 @@ def _publish(
             'id': __opts__['id']}
 
     try:
-        return auth.crypticle.loads(
-            sreq.send('aes', auth.crypticle.dumps(load), 1))
+        return transport.send_encrypted(load, 1)
     except SaltReqTimeoutError:
         return '{0!r} publish timed out'.format(fun)
 
@@ -143,16 +143,15 @@ def runner(fun, arg=None):
     arg = _normalize_arg(arg)
 
     log.info('Publishing runner {0!r} to {master_uri}'.format(fun, **__opts__))
-    sreq = salt.payload.SREQ(__opts__['master_uri'])
-    auth = salt.crypt.SAuth(__opts__)
-    tok = auth.gen_token('salt')
+    transport = salt.transport.Transport(__opts__)
+    transport.sign_in_once_if_caller()
+    tok = transport.get_crypticle().get_keys().private_encrypt('salt', 5)
     load = {'cmd': 'minion_runner',
             'fun': fun,
             'arg': arg,
             'tok': tok,
             'id': __opts__['id']}
     try:
-        return auth.crypticle.loads(
-            sreq.send('aes', auth.crypticle.dumps(load), 1))
+        return transport.send_encrypted(load, 1)
     except SaltReqTimeoutError:
         return '{0!r} runner publish timed out'.format(fun)

@@ -3,7 +3,7 @@ Fire events on the minion, events can be fired up to the master
 '''
 
 # Import salt libs
-import salt.crypt
+import salt.transport
 import salt.utils.event
 import salt.payload
 
@@ -20,10 +20,10 @@ def fire_master(data, tag):
             'tag': tag,
             'data': data,
             'cmd': '_minion_event'}
-    auth = salt.crypt.SAuth(__opts__)
-    sreq = salt.payload.SREQ(__opts__['master_uri'])
+    transport = salt.transport.Transport(__opts__)
+    transport.sign_in_once_if_caller()
     try:
-        sreq.send('aes', auth.crypticle.dumps(load))
+        transport.send_encrypted(load)
     except Exception:
         pass
     return True

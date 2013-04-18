@@ -18,6 +18,7 @@ import yaml
 from salt.exceptions import MinionError, SaltReqTimeoutError
 import salt.client
 import salt.crypt
+import salt.transport
 import salt.loader
 import salt.payload
 import salt.utils
@@ -553,8 +554,8 @@ class RemoteClient(Client):
     '''
     def __init__(self, opts):
         Client.__init__(self, opts)
-        self.auth = salt.crypt.SAuth(opts)
-        self.sreq = salt.payload.SREQ(self.opts['master_uri'])
+        self.transport = salt.transport.Transport(opts)
+        self.transport.sign_in_once_if_caller()
 
     def get_file(self, path, dest='', makedirs=False, env='base', gzip=None):
         '''
@@ -588,12 +589,7 @@ class RemoteClient(Client):
             else:
                 load['loc'] = fn_.tell()
             try:
-                data = self.auth.crypticle.loads(
-                    self.sreq.send('aes',
-                                   self.auth.crypticle.dumps(load),
-                                   3,
-                                   60)
-                )
+                data = self.transport.send_encrypted(load, 3, 60)
             except SaltReqTimeoutError:
                 return ''
 
@@ -643,12 +639,7 @@ class RemoteClient(Client):
         load = {'env': env,
                 'cmd': '_file_list'}
         try:
-            return self.auth.crypticle.loads(
-                self.sreq.send('aes',
-                               self.auth.crypticle.dumps(load),
-                               3,
-                               60)
-            )
+            return self.transport.send_encrypted(load, 3, 60)
         except SaltReqTimeoutError:
             return ''
 
@@ -659,12 +650,7 @@ class RemoteClient(Client):
         load = {'env': env,
                 'cmd': '_file_list_emptydirs'}
         try:
-            return self.auth.crypticle.loads(
-                self.sreq.send('aes',
-                               self.auth.crypticle.dumps(load),
-                               3,
-                               60)
-            )
+            return self.transport.send_encrypted(load, 3, 60)
         except SaltReqTimeoutError:
             return ''
 
@@ -675,12 +661,7 @@ class RemoteClient(Client):
         load = {'env': env,
                 'cmd': '_dir_list'}
         try:
-            return self.auth.crypticle.loads(
-                self.sreq.send('aes',
-                               self.auth.crypticle.dumps(load),
-                               3,
-                               60)
-            )
+            return self.transport.send_encrypted(load, 3, 60)
         except SaltReqTimeoutError:
             return ''
 
@@ -707,12 +688,7 @@ class RemoteClient(Client):
                 'env': env,
                 'cmd': '_file_hash'}
         try:
-            return self.auth.crypticle.loads(
-                self.sreq.send('aes',
-                               self.auth.crypticle.dumps(load),
-                               3,
-                               60)
-            )
+            return self.transport.send_encrypted(load, 3, 60)
         except SaltReqTimeoutError:
             return ''
 
@@ -723,12 +699,7 @@ class RemoteClient(Client):
         load = {'env': env,
                 'cmd': '_file_list'}
         try:
-            return self.auth.crypticle.loads(
-                self.sreq.send('aes',
-                               self.auth.crypticle.dumps(load),
-                               3,
-                               60)
-            )
+            return self.transport.send_encrypted(load, 3, 60)
         except SaltReqTimeoutError:
             return ''
 
@@ -738,12 +709,7 @@ class RemoteClient(Client):
         '''
         load = {'cmd': '_master_opts'}
         try:
-            return self.auth.crypticle.loads(
-                self.sreq.send('aes',
-                               self.auth.crypticle.dumps(load),
-                               3,
-                               60)
-            )
+            return self.transport.send_encrypted(load, 3, 60)
         except SaltReqTimeoutError:
             return ''
 
@@ -756,11 +722,6 @@ class RemoteClient(Client):
                 'id': self.opts['id'],
                 'opts': self.opts}
         try:
-            return self.auth.crypticle.loads(
-                self.sreq.send('aes',
-                               self.auth.crypticle.dumps(load),
-                               3,
-                               60)
-            )
+            return self.transport.send_encrypted(load, 3, 60)
         except SaltReqTimeoutError:
             return ''

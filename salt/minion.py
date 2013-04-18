@@ -759,7 +759,7 @@ class Minion(object):
             ret_val = ''
         if isinstance(ret_val, string_types) and not ret_val:
             # The master AES key has changed, reauth
-            self.authenticate()
+            self.transport.sign_in()
             ret_val = self.transport.send_encrypted(load)
         if self.opts['cache_jobs']:
             # Local job cache has been enabled

@@ -21,6 +21,7 @@ import collections
 import traceback
 
 # Import salt libs
+import salt.transport
 import salt.utils
 import salt.loader
 import salt.minion
@@ -2209,9 +2210,8 @@ class RemoteHighState(object):
     def __init__(self, opts, grains):
         self.opts = opts
         self.grains = grains
-        self.serial = salt.payload.Serial(self.opts)
-        self.auth = salt.crypt.SAuth(opts)
-        self.sreq = salt.payload.SREQ(self.opts['master_uri'])
+        self.transport = salt.transport.Transport(opts)
+        self.transport.sign_in_once_if_caller()
 
     def compile_master(self):
         '''
@@ -2221,11 +2221,7 @@ class RemoteHighState(object):
                 'opts': self.opts,
                 'cmd': '_master_state'}
         try:
-            return self.auth.crypticle.loads(self.sreq.send(
-                    'aes',
-                    self.auth.crypticle.dumps(load),
-                    3,
-                    72000))
+            return self.transport.send_encrypted(load, 3, 72000)
         except SaltReqTimeoutError:
             return {}
 
