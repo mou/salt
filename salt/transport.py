@@ -24,6 +24,7 @@ class Transport(object):
             self.session['aes'] = self.opts['aes']
         self.event_obj = None
         self.master_key_obj = None
+        self.tls_funcs = salt.tls_handshake.TLSFuncs(self.opts)
 
     @property
     def event(self):
@@ -114,7 +115,7 @@ class Transport(object):
 
         log.info('Authentication request from {id}'.format(**load))
         if "x509" in self.opts:
-            return salt.tls_handshake.TLSFuncs(self.opts)._handshake(load, self)
+            return self.tls_funcs._handshake(load, self)
         else:
             pubfn = os.path.join(self.opts['pki_dir'],
                     'minions',
