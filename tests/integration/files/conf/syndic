@@ -1,7 +1,7 @@
 # basic config
 master: localhost
 master_port: 54506
-root_dir: /tmp/salttest
+root_dir: /tmp/saltsyndictest
 sock_dir: .salt-unix
 pki_dir: pki
 id: minion
