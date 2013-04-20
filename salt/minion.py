@@ -235,13 +235,6 @@ class Minion(object):
         opts['grains'] = salt.loader.grains(opts)
         opts.update(resolve_dns(opts))
         self.opts = opts
-        self.authenticate()
-        self.opts['pillar'] = salt.pillar.get_pillar(
-            opts,
-            opts['grains'],
-            opts['id'],
-            opts['environment'],
-        ).compile_pillar()
         self.serial = salt.payload.Serial(self.opts)
         self.mod_opts = self.__prep_mod_opts()
         self.functions, self.returners = self.__load_modules()
@@ -696,6 +689,14 @@ class Minion(object):
                 ),
                 exc_info=err
             )
+        self.authenticate()
+        self.opts['pillar'] = salt.pillar.get_pillar(
+            self.opts,
+            self.opts['grains'],
+            self.opts['id'],
+            self.opts['environment'],
+        ).compile_pillar()
+
         signal.signal(signal.SIGTERM, self.clean_die)
         log.debug('Minion "{0}" trying to tune in'.format(self.opts['id']))
         self.context = zmq.Context()
@@ -868,15 +869,11 @@ class Syndic(Minion):
     master to authenticate with a higher level master.
     '''
     def __init__(self, opts):
-        interface = opts.get('interface')
         self._syndic = True
         opts['loop_interval'] = 1
         Minion.__init__(self, opts)
-        self.local = salt.client.LocalClient(opts['_master_conf_file'])
-        self.local.event.subscribe('')
         opts.update(self.opts)
         self.opts = opts
-        self.local.opts['interface'] = interface
 
     def _handle_aes(self, load):
         '''
@@ -937,6 +934,20 @@ class Syndic(Minion):
         '''
         Lock onto the publisher. This is the main event loop for the syndic
         '''
+
+        self.authenticate()
+        self.opts['pillar'] = salt.pillar.get_pillar(
+            self.opts,
+            self.opts['grains'],
+            self.opts['id'],
+            self.opts['environment'],
+        ).compile_pillar()
+
+        interface = self.opts.get('interface')
+        self.local = salt.client.LocalClient(self.opts['_master_conf_file'])
+        self.local.opts['interface'] = interface
+        self.local.event.subscribe('')
+
         signal.signal(signal.SIGTERM, self.clean_die)
         log.debug('Syndic "{0}" trying to tune in'.format(self.opts['id']))
         self.context = zmq.Context()
