@@ -75,7 +75,8 @@ class Transport(object):
         return salt.payload.SREQ(self.opts['master_uri'])
 
     def send_encrypted(self, load, tries=1, timeout=60):
-        return self.get_sreq().send("encrypted", self.get_crypticle().dumps(load), tries, timeout)
+        crypticle = self.get_crypticle()
+        return crypticle.loads(self.get_sreq().send("encrypted", crypticle.dumps(load), tries, timeout))
 
     def sign_in_once_if_caller(self):
         '''

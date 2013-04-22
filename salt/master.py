@@ -1261,7 +1261,7 @@ class AESFuncs(object):
             pret = {}
             pret['key'] = pub.public_encrypt(key, 4)
             pret['pillar'] = pcrypt.dumps(ret)
-            return pret
+            return self.transport.get_crypticle().dumps(pret)
         # AES Encrypt the return
         return self.transport.get_crypticle().dumps(ret)
 

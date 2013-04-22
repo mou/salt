@@ -398,6 +398,8 @@ class Crypticle(object):
         '''
         Decrypt and un-serialize a python object
         '''
+        if data is None:
+            return None
         data = self.decrypt(data)
         # simple integrity check to verify that we got meaningful data
         if not data.startswith(self.PICKLE_PAD):
