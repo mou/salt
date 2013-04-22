@@ -50,7 +50,7 @@ def _publish(
     log.info('Publishing {0!r} to {master_uri}'.format(fun, **__opts__))
     transport = salt.transport.Transport(__opts__)
     transport.sign_in_once_if_caller()
-    tok = transport.get_crypticle().get_keys().private_encrypt('salt', 5)
+    tok = transport.get_auth().get_keys().private_encrypt('salt', 5)
     load = {'cmd': 'minion_publish',
             'fun': fun,
             'arg': arg,
