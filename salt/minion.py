@@ -421,7 +421,7 @@ class Minion(object):
         # module
         opts['grains'] = salt.loader.grains(opts)
         opts.update(resolve_dns(opts))
-        self.transport = salt.transport.Transport(opts)
+        self.transport = salt.transport.ClientTransport(opts)
         self.opts = opts
         self.transport.sign_in(timeout, safe)
         self.opts['pillar'] = salt.pillar.get_pillar(
@@ -484,7 +484,7 @@ class Minion(object):
         Takes a payload from the master publisher and does whatever the
         master wants done.
         '''
-        {'encrypted': self._handle_aes}[payload['enc']](payload['load'])
+        {'encrypted': self._handle_aes}[payload['enc']](payload)
 
     def _handle_aes(self, load):
         '''
@@ -492,10 +492,10 @@ class Minion(object):
         instructions
         '''
         try:
-            data = self.transport.get_crypticle().loads(load)
+            data = self.transport.get_crypticle(load['id']).loads(load['load'])
         except AuthenticationError:
             self.transport.sign_in()
-            data = self.transport.get_crypticle().loads(load)
+            data = self.transport.get_crypticle(load['id']).loads(load['load'])
         # Verify that the publication is valid
         if 'tgt' not in data or 'jid' not in data or 'fun' not in data \
            or 'arg' not in data:
@@ -797,7 +797,7 @@ class Minion(object):
         Return the master publish port
         '''
         return 'tcp://{ip}:{port}'.format(ip=self.opts['master_ip'],
-                                          port=self.transport.session['publish_port'])
+                                          port=self.transport.session['master']['publish_port'])
 
     def module_refresh(self):
         '''

@@ -100,7 +100,7 @@ class SMaster(object):
         self.transport = self.__prep_transport()
 
     def __prep_transport(self):
-        return salt.transport.Transport(self.opts)
+        return salt.transport.ServerTransport(self.opts)
 
     def __prep_key(self):
         '''
@@ -571,18 +571,22 @@ class MWorker(multiprocessing.Process):
         '''
         try:
             key = payload['enc']
+            if 'id' in payload:
+                session_id = payload['id']
+            else:
+                session_id = None
             load = payload['load']
         except KeyError:
             return ''
         return {'encrypted': self._handle_aes,
-                'clear': self._handle_clear}[key](load)
+                'clear': self._handle_clear}[key](load, session_id)
 
-    def _handle_clear(self, load):
+    def _handle_clear(self, load, session_id=None):
         '''
         Take care of a cleartext command
         '''
         log.info('Clear payload received with command {cmd}'.format(**load))
-        return getattr(self.clear_funcs, load['cmd'])(load)
+        return getattr(self.clear_funcs, load['cmd'])(load, session_id)
 
     def _handle_pub(self, load):
         '''
@@ -590,19 +594,19 @@ class MWorker(multiprocessing.Process):
         '''
         log.info('Pubkey payload received with command {cmd}'.format(**load))
 
-    def _handle_aes(self, load):
+    def _handle_aes(self, load, session_id):
         '''
         Handle a command sent via an AES key
         '''
         try:
-            data = self.transport.get_crypticle().loads(load)
+            data = self.transport.get_crypticle(session_id).loads(load)
         except Exception:
             return ''
         if 'cmd' not in data:
             log.error('Received malformed command {0}'.format(data))
             return {}
         log.info('AES payload received with command {0}'.format(data['cmd']))
-        return self.aes_funcs.run_func(data['cmd'], data)
+        return self.aes_funcs.run_func(data['cmd'], data, session_id)
 
     def _update_aes(self):
         '''
@@ -1212,13 +1216,13 @@ class AESFuncs(object):
         keyapi.delete_key(load['id'])
         return True
 
-    def run_func(self, func, load):
+    def run_func(self, func, load, session_id):
         '''
         Wrapper for running functions executed with AES encryption
         '''
         # Don't honor private functions
         if func.startswith('__'):
-            return self.transport.get_crypticle().dumps({})
+            return self.transport.get_crypticle(session_id).dumps({})
         # Run the func
         if hasattr(self, func):
             try:
@@ -1236,7 +1240,7 @@ class AESFuncs(object):
                     func
                 )
             )
-            return self.transport.get_crypticle().dumps(False)
+            return self.transport.get_crypticle(session_id).dumps(False)
         # Don't encrypt the return value for the _return func
         # (we don't care about the return value, so why encrypt it?)
         if func == '_return':
@@ -1244,7 +1248,7 @@ class AESFuncs(object):
         if func == '_pillar' and 'id' in load:
             if load.get('ver') != '2' and self.opts['pillar_version'] == 1:
                 # Authorized to return old pillar proto
-                return self.transport.get_crypticle().dumps(ret)
+                return self.transport.get_crypticle(load["id"]).dumps(ret)
             # encrypt with a specific AES key
             pubfn = os.path.join(self.opts['pki_dir'],
                     'minions',
@@ -1252,18 +1256,19 @@ class AESFuncs(object):
             key = salt.crypt.Crypticle.generate_key_string()
             pcrypt = salt.crypt.Crypticle(
                     self.opts,
-                    key)
+                    self.transport,
+                    session_id)
             try:
                 pub = RSA.load_pub_key(pubfn)
             except RSA.RSAError:
-                return self.transport.get_crypticle().dumps({})
+                return self.transport.get_crypticle(session_id).dumps({})
 
             pret = {}
             pret['key'] = pub.public_encrypt(key, 4)
             pret['pillar'] = pcrypt.dumps(ret)
-            return self.transport.get_crypticle().dumps(pret)
+            return self.transport.get_crypticle(session_id).dumps(ret)
         # AES Encrypt the return
-        return self.transport.get_crypticle().dumps(ret)
+        return self.transport.get_crypticle(session_id).dumps(ret)
 
 
 class ClearFuncs(object):
@@ -1424,10 +1429,10 @@ class ClearFuncs(object):
 
         return False
 
-    def _auth(self, load):
-        return self.transport.auth(load)
+    def _auth(self, load, session_id):
+        return self.transport.auth(load, session_id)
 
-    def wheel(self, clear_load):
+    def wheel(self, clear_load, session_id):
         '''
         Send a master control function back to the wheel system
         '''
@@ -1507,7 +1512,7 @@ class ClearFuncs(object):
             )
             return ''
 
-    def mk_token(self, clear_load):
+    def mk_token(self, clear_load, session_id):
         '''
         Create and return an authentication token, the clear load needs to
         contain the eauth key and the needed authentication creds.
@@ -1534,7 +1539,7 @@ class ClearFuncs(object):
             )
             return ''
 
-    def publish(self, clear_load):
+    def publish(self, clear_load, session_id):
         '''
         This method sends out publications to the minions, it can only be used
         by the LocalClient.
@@ -1798,7 +1803,8 @@ class ClearFuncs(object):
 
         # Set up the payload
         payload = {'enc': 'encrypted'}
-        payload['load'] = self.transport.get_crypticle().dumps(load)
+        payload['id'] = 'publish'
+        payload['load'] = self.transport.get_crypticle("publish").dumps(load)
         # Send 0MQ to the publisher
         context = zmq.Context(1)
         pub_sock = context.socket(zmq.PUSH)

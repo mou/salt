@@ -20,7 +20,7 @@ def fire_master(data, tag):
             'tag': tag,
             'data': data,
             'cmd': '_minion_event'}
-    transport = salt.transport.Transport(__opts__)
+    transport = salt.transport.ClientTransport(__opts__)
     transport.sign_in_once_if_caller()
     try:
         transport.send_encrypted(load)

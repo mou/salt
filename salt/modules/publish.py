@@ -48,7 +48,7 @@ def _publish(
     arg = _normalize_arg(arg)
 
     log.info('Publishing {0!r} to {master_uri}'.format(fun, **__opts__))
-    transport = salt.transport.Transport(__opts__)
+    transport = salt.transport.ClientTransport(__opts__)
     transport.sign_in_once_if_caller()
     tok = transport.get_auth().get_keys().private_encrypt('salt', 5)
     load = {'cmd': 'minion_publish',
@@ -143,7 +143,7 @@ def runner(fun, arg=None):
     arg = _normalize_arg(arg)
 
     log.info('Publishing runner {0!r} to {master_uri}'.format(fun, **__opts__))
-    transport = salt.transport.Transport(__opts__)
+    transport = salt.transport.ClientTransport(__opts__)
     transport.sign_in_once_if_caller()
     tok = transport.get_crypticle().get_keys().private_encrypt('salt', 5)
     load = {'cmd': 'minion_runner',

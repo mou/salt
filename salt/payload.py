@@ -139,12 +139,14 @@ class SREQ(object):
         self.socket.connect(master)
         self.poller = zmq.Poller()
 
-    def send(self, enc, load, tries=1, timeout=60):
+    def send(self, enc, load, sender_id=None, tries=1, timeout=60):
         '''
         Takes two arguments, the encryption type and the base payload
         '''
         payload = {'enc': enc}
         payload['load'] = load
+        if sender_id:
+            payload['id'] = sender_id
         package = self.serial.dumps(payload)
         self.socket.send(package)
         self.poller.register(self.socket, zmq.POLLIN)
@@ -162,13 +164,13 @@ class SREQ(object):
                 )
         return self.serial.loads(self.socket.recv())
 
-    def send_auto(self, payload, tries=1, timeout=60):
+    def send_auto(self, payload, sender_id=None, tries=1, timeout=60):
         '''
         Detect the encryption type based on the payload
         '''
         enc = payload.get('enc', 'clear')
         load = payload.get('load', {})
-        return self.send(enc, load, tries, timeout)
+        return self.send(enc, load, sender_id=sender_id, tries=tries, timeout=timeout)
 
     def destroy(self):
         for socket in self.poller.sockets.keys():

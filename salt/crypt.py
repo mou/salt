@@ -188,28 +188,33 @@ class Auth(object):
         log.debug('Decrypting the current master AES key')
         key = self.get_keys()
         key_str = key.private_decrypt(payload['aes'], 4)
-        if 'sig' in payload:
+        publish_key_str = key.private_decrypt(payload['publish_aes'], 4)
+        if 'sig' in payload and 'publish_sig' in payload:
             m_path = os.path.join(self.opts['pki_dir'], self.mpub)
             if os.path.exists(m_path):
                 try:
                     mkey = RSA.load_pub_key(m_path)
                 except Exception:
-                    return '', ''
+                    return '', '', ''
                 digest = hashlib.sha256(key_str).hexdigest()
                 m_digest = mkey.public_decrypt(payload['sig'], 5)
                 if m_digest != digest:
-                    return '', ''
+                    return '', '', ''
+                publish_digest = hashlib.sha256(publish_key_str).hexdigest()
+                p_digest = mkey.public_decrypt(payload['publish_sig'], 5)
+                if p_digest != publish_digest:
+                    return '', '', ''
         else:
-            return '', ''
+            return '', '', ''
         if '_|-' in key_str:
             return key_str.split('_|-')
         else:
             if 'token' in payload:
                 token = key.private_decrypt(payload['token'], 4)
-                return key_str, token
+                return key_str, publish_key_str, token
             elif not master_pub:
-                return key_str, ''
-        return '', ''
+                return key_str, publish_key_str, ''
+        return '', '', ''
 
     def verify_master(self, payload):
         '''
@@ -224,7 +229,7 @@ class Auth(object):
                           'key')
                 return ''
             try:
-                aes, token = self.decrypt_aes(payload)
+                aes, publish_aes, token = self.decrypt_aes(payload)
                 if token != self.token:
                     log.error(
                         'The master failed to decrypt the random minion token'
@@ -235,11 +240,11 @@ class Auth(object):
                     'The master failed to decrypt the random minion token'
                 )
                 return ''
-            return aes
+            return aes, publish_aes
         else:
             salt.utils.fopen(m_pub_fn, 'w+').write(payload['pub_key'])
-            aes, token = self.decrypt_aes(payload, False)
-            return aes
+            aes, publish_aes, token = self.decrypt_aes(payload, False)
+            return aes, publish_aes
 
     def sign_in(self, timeout=60, safe=True):
         '''
@@ -265,8 +270,9 @@ class Auth(object):
         )
         try:
             payload = sreq.send_auto(
-                self.minion_sign_in_payload(),
-                timeout=timeout
+                    self.minion_sign_in_payload(),
+                    self.opts['id'],
+                    timeout=timeout
             )
         except SaltReqTimeoutError:
             if safe:
@@ -293,8 +299,8 @@ class Auth(object):
                         )
                     )
                     return 'retry'
-        aes = self.verify_master(payload)
-        if not aes:
+        aes, publish_aes = self.verify_master(payload)
+        if not aes or not publish_aes:
             log.critical(
                 'The Salt Master server\'s public key did not authenticate!\n'
                 'The master may need to be updated if it is a version of Salt '
@@ -319,8 +325,14 @@ class Auth(object):
                     )
                 )
                 sys.exit(42)
-        self.transport.session['aes'] = aes
-        self.transport.session['publish_port'] = payload['publish_port']
+        session = self.transport.session['master']
+        session['aes'] = aes
+        session['publish_port'] = payload['publish_port']
+        self.transport.session['master'] = session
+        session = self.transport.session['publish']
+        session['aes'] = publish_aes
+        session['publish_port'] = payload['publish_port']
+        self.transport.session['publish'] = session
         return True
 
 
@@ -336,8 +348,12 @@ class Crypticle(object):
     AES_BLOCK_SIZE = 16
     SIG_SIZE = hashlib.sha256().digest_size
 
-    def __init__(self, opts, key_string, key_size=192):
-        self.keys = self.extract_keys(key_string, key_size)
+    def __init__(self, opts, transport, session_id, key_size=192):
+        session = transport.session[session_id]
+        if not 'aes' in session:
+            session['aes'] = Crypticle.generate_key_string()
+            transport.session[session_id] = session
+        self.keys = self.extract_keys(session['aes'], key_size)
         self.key_size = key_size
         self.serial = salt.payload.Serial(opts)
 

@@ -40,7 +40,7 @@ class RemotePillar(object):
         self.ext = ext
         self.grains = grains
         self.id_ = id_
-        self.transport = salt.transport.Transport(self.opts)
+        self.transport = salt.transport.ClientTransport(self.opts)
 
     def compile_pillar(self):
         '''
@@ -55,10 +55,7 @@ class RemotePillar(object):
             load['ext'] = self.ext
         self.transport.sign_in_once_if_caller()
         ret = self.transport.send_encrypted(load, 3, 7200)
-        key = self.transport.get_auth().get_keys()
-        aes = key.private_decrypt(ret['key'], 4)
-        pcrypt = salt.crypt.Crypticle(self.opts, aes)
-        return pcrypt.loads(ret['pillar'])
+        return ret
 
 
 class Pillar(object):

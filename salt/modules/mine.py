@@ -8,18 +8,21 @@ import logging
 
 # Import salt libs
 import salt.crypt
+import salt.transport
 import salt.payload
 
 
 log = logging.getLogger(__name__)
 
-def _auth():
+def _transport():
     '''
     Return the auth object
     '''
-    if 'auth' not in __context__:
-        __context__['auth'] = salt.crypt.SAuth(__opts__)
-    return __context__['auth']
+    if not 'mine.transport' in __context__:
+        transport = salt.transport.ClientTransport(__opts__)
+        transport.sign_in_once_if_caller()
+        __context__['mine.transport'] = transport
+    return __context__['mine.transport']
 
 
 def update():
@@ -71,10 +74,9 @@ def update():
             'data': data,
             'id': __opts__['id']
             }
-    sreq = salt.payload.SREQ(__opts__['master_uri'])
-    auth = _auth()
+    transport = _transport()
     try:
-        sreq.send('aes', auth.crypticle.dumps(load), 1, 0)
+        transport.send_encrypted(load, 1, 0)
     except Exception:
         pass
 
@@ -87,7 +89,7 @@ def get(tgt, fun, expr_form='glob'):
 
         salt '*' mine.get '*' network.interfaces
     '''
-    auth = _auth()
+    transport = _transport()
     load = {
             'cmd': '_mine_get',
             'id': __opts__['id'],
@@ -95,6 +97,4 @@ def get(tgt, fun, expr_form='glob'):
             'fun': fun,
             'expr_form': expr_form,
             }
-    sreq = salt.payload.SREQ(__opts__['master_uri'])
-    ret = sreq.send('aes', auth.crypticle.dumps(load))
-    return auth.crypticle.loads(ret)
+    return transport.send_encrypted(load)

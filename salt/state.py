@@ -2210,7 +2210,7 @@ class RemoteHighState(object):
     def __init__(self, opts, grains):
         self.opts = opts
         self.grains = grains
-        self.transport = salt.transport.Transport(opts)
+        self.transport = salt.transport.ClientTransport(opts)
         self.transport.sign_in_once_if_caller()
 
     def compile_master(self):

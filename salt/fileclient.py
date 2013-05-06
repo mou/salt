@@ -554,7 +554,7 @@ class RemoteClient(Client):
     '''
     def __init__(self, opts):
         Client.__init__(self, opts)
-        self.transport = salt.transport.Transport(opts)
+        self.transport = salt.transport.ClientTransport(opts)
         self.transport.sign_in_once_if_caller()
 
     def get_file(self, path, dest='', makedirs=False, env='base', gzip=None):

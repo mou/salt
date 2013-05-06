@@ -61,14 +61,10 @@ class Auth(object):
 
         log.debug('Starting TLS..')
         payload = salt.tls_handshake.do_client_handshake(sreq, self.opts)
-        self.transport.session = payload
-
-class Session(object):
-    def __init__(self, publish_port, cert, key, opposite_cert):
-        self.publish_port = publish_port
-        self.cert = cert
-        self.key = key
-        self.opposite_cert = opposite_cert
+        session = self.transport.session['master']
+        session['aes'] = payload['aes']
+        session['publish_port'] = payload['publish_port']
+        self.transport.session['master'] = session
 
 
 class Crypticle(object):

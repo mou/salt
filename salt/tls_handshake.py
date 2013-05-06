@@ -314,7 +314,7 @@ class ClientHandshake(Handshake):
         }
         if result is not None:
             payload['result'] = result
-        return self.sreq.send('clear', payload)
+        return self.sreq.send('clear', payload, sender_id=self.minion_id)
 
     def error(self, error):
         log.debug(error)
