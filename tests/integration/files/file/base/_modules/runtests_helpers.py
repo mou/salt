@@ -14,7 +14,7 @@ import tempfile
 
 SYS_TMP_DIR = tempfile.gettempdir()
 # This tempdir path is defined on tests.integration.__init__
-TMP = os.path.join(SYS_TMP_DIR, 'salt-tests-tmpdir')
+TMP = os.path.join(SYS_TMP_DIR, 'salt-tst-tmpdir')
 
 
 def get_salt_temp_dir_for_path(*path):
