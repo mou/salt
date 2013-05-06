@@ -530,7 +530,7 @@ class SessionStore(object):
 
 
 class _Session(Structure):
-    _fields_ = [('id', c_char * 17), ('timestamp', c_long), ('session', c_byte * MAX_SESSION_SIZE)]
+    _fields_ = [('id', c_char * 512), ('timestamp', c_long), ('session', c_byte * MAX_SESSION_SIZE)]
 
 
 class Session(object):
