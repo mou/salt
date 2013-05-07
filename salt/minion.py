@@ -1101,10 +1101,10 @@ class Syndic(Minion):
         '''
         # If the AES authentication has changed, re-authenticate
         try:
-            data = self.transport.get_crypticle().loads(load)
+            data = self.transport.get_crypticle(load['id']).loads(load['load'])
         except AuthenticationError:
             self.transport.sign_in()
-            data = self.transport.get_crypticle().loads(load)
+            data = self.transport.get_crypticle(load['id']).loads(load['load'])
         # Verify that the publication is valid
         if 'tgt' not in data or 'jid' not in data or 'fun' not in data \
            or 'to' not in data or 'arg' not in data:
