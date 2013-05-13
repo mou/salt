@@ -40,7 +40,7 @@ class Auth(object):
         key = RSA.load_key(self.opts['x509']['key'])
         return key
 
-    def sign_in(self):
+    def sign_in(self, timeout, safe):
         '''
         Send a sign in request to the master, sets the key information and
         returns a dict containing the master publish interface to bind to

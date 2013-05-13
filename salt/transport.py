@@ -27,7 +27,7 @@ class ClientTransport(object):
         self.id = opts['id']
         self.session = SessionStore(2)
 
-    def sign_in(self):
+    def sign_in(self, timeout=60, safe=True):
         '''
         Authenticate with the master, this method breaks the functional
         paradigm, it will update the master information from a fresh sign
@@ -41,14 +41,14 @@ class ClientTransport(object):
         )
         auth = self.get_auth()
         while True:
-            result = auth.sign_in()
+            result = auth.sign_in(timeout=timeout, safe=safe)
             if result != 'retry':
                 log.info('Authentication with master successful!')
                 break
             log.info('Waiting for minion key to be accepted by the master.')
             time.sleep(self.opts['acceptance_wait_time'])
 
-    def sign_in_once_if_caller(self):
+    def sign_in_once_if_caller(self, timeout=60, safe=True):
         '''
         Authenticate with the master, this method breaks the functional
         paradigm, it will update the master information from a fresh sign
@@ -56,7 +56,7 @@ class ClientTransport(object):
         revolving master aes key.
         '''
         while True:
-            creds = self.get_auth().sign_in()
+            creds = self.get_auth().sign_in(timeout=timeout, safe=safe)
             if creds == 'retry':
                 if self.opts.get('caller'):
                     msg = ('Minion failed to authenticate with the master, '
@@ -83,7 +83,7 @@ class ClientTransport(object):
 
     def send_encrypted(self, load, tries=1, timeout=60):
         crypticle = self.get_crypticle()
-        return crypticle.loads(self.get_sreq().send("encrypted", crypticle.dumps(load), tries, timeout, sender_id=self.id))
+        return crypticle.loads(self.get_sreq().send("encrypted", crypticle.dumps(load), sender_id=self.id, tries=tries, timeout=timeout))
 
 
 
@@ -132,6 +132,13 @@ class ServerTransport(object):
         # 5. package the return and return it
 
         salt.utils.verify.check_max_open_files(self.opts)
+
+        if not salt.utils.verify.valid_id(load['id']):
+            log.info(
+                'Authentication request from invalid id {id}'.format(**load)
+                )
+            return {'enc': 'clear',
+                    'load': {'ret': False}}
 
         log.info('Authentication request from {id}'.format(**load))
         if "x509" in self.opts:
